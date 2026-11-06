@@ -304,6 +304,22 @@ class BinfenInput:
                         "step": 4
                     }
                 )
+            },
+
+            # 是否在工具栏显示比例选择器胶囊。
+            # 纯前端显示设置，按节点独立保存在工作流里。
+            #
+            # 用 optional 而不是 required：前端没刷新时不会
+            # 因为缺少这个输入而让整个工作流校验失败。
+            # optional 排在 required 之后，旧工作流按位置恢复
+            # widgets_values 时不会错位。
+            "optional": {
+                "resolution_visible": (
+                    "BOOLEAN",
+                    {
+                        "default": True
+                    }
+                )
             }
         }
 
@@ -345,7 +361,8 @@ class BinfenInput:
         video_output_type="IMAGE",
         resolution_ratio="1:1",
         resolution_megapixels=1.0,
-        resolution_multiple=8
+        resolution_multiple=8,
+        resolution_visible=True
     ):
 
         output_width, output_height = calculate_resolution(
