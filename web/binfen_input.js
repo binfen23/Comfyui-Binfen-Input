@@ -13,6 +13,10 @@ const MAX_AUDIOS = 16;
 
 const ASSET_FOLDER = "binfen_input";
 
+/*
+   只作为“新建节点”的初始值种子。
+   真正的分辨率设置按节点保存在 widget 里，随工作流序列化。
+*/
 const RESOLUTION_STORAGE_KEY = "apc.resolution";
 
 const RESOLUTION_RATIOS = [
@@ -1950,6 +1954,7 @@ function hideInternalWidgets(node) {
         "resolution_ratio",
         "resolution_megapixels",
         "resolution_multiple",
+        "resolution_visible",
         "clear_assets_after_run",
         "clear_prompt_after_run"
     ];
@@ -3921,9 +3926,13 @@ function closeVideoTypePopover() {
 
 /* =========================================================
    RESOLUTION SELECTOR
-========================================================= */
 
-let resolutionState = null;
+   分辨率设置按节点独立保存在 widget 里，
+   随工作流一起序列化，不同工作流之间互不影响。
+
+   localStorage 只保留“上一次使用的设置”，
+   仅作为新建节点的初始值种子。
+========================================================= */
 
 const resolutionCapsules = new Map();
 
@@ -3973,17 +3982,11 @@ function normalizeResolutionState(value) {
 }
 
 
-function ensureResolutionState() {
-
-    if (resolutionState) {
-        return resolutionState;
-    }
-
-    let stored = null;
+function readResolutionSeed() {
 
     try {
 
-        stored = JSON.parse(
+        return JSON.parse(
             localStorage.getItem(
                 RESOLUTION_STORAGE_KEY
             ) || "null"
@@ -3991,24 +3994,18 @@ function ensureResolutionState() {
 
     } catch (error) {
 
-        stored = null;
+        return null;
     }
-
-    resolutionState = normalizeResolutionState(
-        stored || {}
-    );
-
-    return resolutionState;
 }
 
 
-function saveResolutionState() {
+function saveResolutionSeed(state) {
 
     try {
 
         localStorage.setItem(
             RESOLUTION_STORAGE_KEY,
-            JSON.stringify(resolutionState)
+            JSON.stringify(state)
         );
 
     } catch (error) {
@@ -4018,6 +4015,42 @@ function saveResolutionState() {
             error
         );
     }
+}
+
+
+/*
+   读取某个节点自己的分辨率设置。
+   全部来自 widget，因此随工作流保存和恢复。
+*/
+
+function getNodeResolutionState(node) {
+
+    return normalizeResolutionState({
+
+        ratio: getWidgetValue(
+            node,
+            "resolution_ratio",
+            DEFAULT_RESOLUTION.ratio
+        ),
+
+        megapixels: getWidgetValue(
+            node,
+            "resolution_megapixels",
+            DEFAULT_RESOLUTION.megapixels
+        ),
+
+        multiple: getWidgetValue(
+            node,
+            "resolution_multiple",
+            DEFAULT_RESOLUTION.multiple
+        ),
+
+        visible: getWidgetValue(
+            node,
+            "resolution_visible",
+            DEFAULT_RESOLUTION.visible
+        )
+    });
 }
 
 
@@ -4052,7 +4085,7 @@ function roundHalfEven(value) {
 }
 
 
-function calculateResolution(state = ensureResolutionState()) {
+function calculateResolution(state) {
 
     const ratio = getResolutionRatio(state.ratio);
 
@@ -4123,66 +4156,73 @@ function ratioIcon(id, size = 16) {
 }
 
 
-function applyResolutionToNode(node) {
+function applyResolutionToNode(node, state) {
 
     if (!node) {
         return;
     }
 
-    const state = ensureResolutionState();
+    const target = state
+        ? normalizeResolutionState(state)
+        : getNodeResolutionState(node);
 
     setWidgetValue(
         node,
         "resolution_ratio",
-        state.ratio
+        target.ratio
     );
 
     setWidgetValue(
         node,
         "resolution_megapixels",
-        state.megapixels
+        target.megapixels
     );
 
     setWidgetValue(
         node,
         "resolution_multiple",
-        state.multiple
+        target.multiple
+    );
+
+    setWidgetValue(
+        node,
+        "resolution_visible",
+        target.visible
     );
 }
 
 
-function applyResolutionStateToNodes() {
+/*
+   只修改传入的这一个节点。
+   其它节点、其它工作流完全不受影响。
+*/
 
-    for (const node of composerNodes) {
-        applyResolutionToNode(node);
+function updateResolution(node, patch) {
+
+    if (!node) {
+        return;
+    }
+
+    const state = normalizeResolutionState({
+        ...getNodeResolutionState(node),
+        ...patch
+    });
+
+    applyResolutionToNode(node, state);
+
+    saveResolutionSeed(state);
+
+    syncResolutionSettingsUI(node);
+
+    ensureResolutionCapsule();
+
+    if (activeResolutionCapsule?._apcNode === node) {
+        updateResolutionPopover();
     }
 }
 
 
-function updateResolution(patch) {
-
-    resolutionState = normalizeResolutionState({
-        ...ensureResolutionState(),
-        ...patch
-    });
-
-    saveResolutionState();
-
-    applyResolutionStateToNodes();
-
-    updateResolutionCapsule();
-
-    updateResolutionPopover();
-
-    syncResolutionSettingsUI();
-
-    ensureResolutionCapsule();
-}
-
-
 function syncResolutionSettingsUI(node = null) {
-
-    const state = ensureResolutionState();
 
     const nodes = node
         ? [node]
@@ -4195,6 +4235,8 @@ function syncResolutionSettingsUI(node = null) {
         if (!root) {
             continue;
         }
+
+        const state = getNodeResolutionState(target);
 
         root.querySelectorAll(
             "[data-resolution]"
@@ -4243,14 +4285,14 @@ function initializeResolutionSettings(node) {
 
             if (key === "megapixels") {
 
-                updateResolution({
+                updateResolution(node, {
                     megapixels: clampFloat(value, 0.1, 16)
                 });
 
                 return;
             }
 
-            updateResolution({
+            updateResolution(node, {
                 multiple: clamp(
                     Math.round(value / 4) * 4,
                     8,
@@ -4278,7 +4320,7 @@ function initializeResolutionSettings(node) {
 
         toggle.addEventListener("change", () => {
 
-            updateResolution({
+            updateResolution(node, {
                 visible: toggle.checked
             });
         });
@@ -4288,7 +4330,7 @@ function initializeResolutionSettings(node) {
 }
 
 
-function createResolutionCapsule() {
+function createResolutionCapsule(node) {
 
     const capsule = document.createElement("button");
 
@@ -4301,6 +4343,8 @@ function createResolutionCapsule() {
     capsule.setAttribute("aria-haspopup", "menu");
 
     capsule.setAttribute("aria-expanded", "false");
+
+    capsule._apcNode = node;
 
     capsule.addEventListener("pointerdown", event => {
         event.stopPropagation();
@@ -4325,8 +4369,6 @@ function createResolutionCapsule() {
 
 function updateResolutionCapsule(capsule = null) {
 
-    const state = ensureResolutionState();
-
     const targets = capsule
         ? [capsule]
         : Array.from(resolutionCapsules.values());
@@ -4336,6 +4378,14 @@ function updateResolutionCapsule(capsule = null) {
         if (!target) {
             continue;
         }
+
+        const node = target._apcNode;
+
+        if (!node) {
+            continue;
+        }
+
+        const state = getNodeResolutionState(node);
 
         if (target.dataset.ratio === state.ratio) {
             continue;
@@ -4399,9 +4449,12 @@ function createResolutionPopover() {
 
         button.addEventListener("click", () => {
 
-            updateResolution({
-                ratio: button.dataset.ratio
-            });
+            updateResolution(
+                activeResolutionCapsule?._apcNode,
+                {
+                    ratio: button.dataset.ratio
+                }
+            );
 
             closeResolutionPopover();
         });
@@ -4417,7 +4470,13 @@ function updateResolutionPopover() {
         return;
     }
 
-    const state = ensureResolutionState();
+    const node = activeResolutionCapsule?._apcNode;
+
+    if (!node) {
+        return;
+    }
+
+    const state = getNodeResolutionState(node);
 
     const size = calculateResolution(state);
 
@@ -4491,8 +4550,6 @@ function positionResolutionPopover() {
 
 
 function openResolutionPopover() {
-
-    ensureResolutionState();
 
     if (!resolutionPopover) {
 
@@ -4664,18 +4721,18 @@ function removeResolutionCapsule(node = null) {
 
 function ensureResolutionCapsule() {
 
-    const state = ensureResolutionState();
-
-    if (!state.visible) {
-
-        if (resolutionCapsules.size) {
-            removeResolutionCapsule();
-        }
-
-        return;
-    }
-
     for (const node of composerNodes) {
+
+        /*
+           是否显示胶囊是每个节点自己的设置。
+        */
+
+        if (!getNodeResolutionState(node).visible) {
+
+            removeResolutionCapsule(node);
+
+            continue;
+        }
 
         const ui = node._apcUI;
 
@@ -4699,7 +4756,7 @@ function ensureResolutionCapsule() {
 
         if (!capsule) {
 
-            capsule = createResolutionCapsule();
+            capsule = createResolutionCapsule(node);
 
             resolutionCapsules.set(node, capsule);
         }
@@ -4735,8 +4792,6 @@ function ensureResolutionCapsule() {
 function installResolutionCapsule() {
 
     try {
-
-        ensureResolutionState();
 
         injectCSS();
     } catch (error) {
@@ -5272,7 +5327,18 @@ function createUI(node) {
 
     root.style.maxWidth = "100%";
 
-    applyResolutionToNode(node);
+    /*
+       新建节点用上一次的设置作为初始值。
+       工作流加载时这里拿到的还是默认值，
+       随后 onConfigure 会用保存的 widget 值覆盖。
+    */
+
+    const resolutionSeed = readResolutionSeed();
+
+    if (resolutionSeed) {
+
+        applyResolutionToNode(node, resolutionSeed);
+    }
 
     initializeResolutionSettings(node);
 
@@ -5702,8 +5768,6 @@ function restoreUI(node) {
 
     state.videoOutputType = readVideoOutputType(node);
 
-    applyResolutionToNode(node);
-
     syncResolutionSettingsUI(node);
 
     trimAssetsToLimits(node);
@@ -6042,14 +6106,19 @@ app.registerExtension({
 
                 trimAssetsToLimits(this);
 
-                applyResolutionToNode(this);
-
-                syncResolutionSettingsUI(this);
-
                 applyOutputLayout(
                     this,
                     this._apcState.counts
                 );
+
+                /*
+                   widget 值已由 configure 还原，
+                   这里只刷新界面，不能反向覆盖保存的值。
+                */
+
+                syncResolutionSettingsUI(this);
+
+                ensureResolutionCapsule();
             }
 
             setTimeout(() => {
